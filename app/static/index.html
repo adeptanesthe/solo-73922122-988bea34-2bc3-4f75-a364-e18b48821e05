@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>冲压机冲次声音核对</title>
+<title>主轴空转转速声音核对</title>
 <style>
   :root {
     --bg: #0f1419; --panel: #1a2230; --line: #2b3648;
@@ -23,12 +23,17 @@
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 18px 20px; margin-bottom: 20px;
   }
-  .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .upload-box label { display: block; font-weight: 600; margin-bottom: 8px; }
-  .upload-box .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 160px 160px; gap: 16px; }
+  .field label { display: block; font-weight: 600; margin-bottom: 8px; }
+  .field .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
   input[type=file] {
     width: 100%; padding: 10px; background: var(--bg);
     border: 1px dashed var(--line); border-radius: 8px; color: var(--muted);
+  }
+  input[type=number] {
+    width: 100%; padding: 10px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; color: var(--text);
+    font-size: 14px;
   }
   button {
     background: var(--info); color: #08131f; border: 0; border-radius: 8px;
@@ -45,59 +50,71 @@
     display: inline-block; padding: 4px 12px; border-radius: 999px;
     font-weight: 700; font-size: 13px;
   }
-  .badge.ok { background: rgba(46,204,113,.15); color: var(--ok); border: 1px solid var(--ok); }
-  .badge.defect { background: rgba(231,76,60,.15); color: var(--bad); border: 1px solid var(--bad); }
-  .badge.ambiguous { background: rgba(243,156,18,.15); color: var(--warn); border: 1px solid var(--warn); }
+  .badge.confirmed { background: rgba(46,204,113,.15); color: var(--ok); border: 1px solid var(--ok); }
+  .badge.unconfirmed { background: rgba(243,156,18,.15); color: var(--warn); border: 1px solid var(--warn); }
   .stats { display: flex; gap: 22px; flex-wrap: wrap; color: var(--muted); }
   .stats b { color: var(--text); font-size: 16px; }
-  .ambiguous-banner {
+  .banner {
     margin-top: 14px; padding: 12px 14px; border-radius: 8px;
     background: rgba(243,156,18,.12); border: 1px solid var(--warn); color: #ffce85;
   }
+  .banner.ok { background: rgba(46,204,113,.10); border-color: var(--ok); color: #9be8b6; }
   .warnings { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
   .warnings li { margin: 2px 0; }
   h3 { margin: 0 0 10px; font-size: 15px; }
-  .track-wrap { margin-bottom: 8px; }
-  canvas {
-    width: 100%; height: 96px; display: block; background: var(--bg);
-    border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
-  }
-  audio { width: 100%; margin-top: 8px; }
-  .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 8px; }
-  .legend span::before {
-    content: ""; display: inline-block; width: 10px; height: 10px;
-    border-radius: 2px; margin-right: 5px; vertical-align: -1px;
-  }
-  .lg-match::before { background: var(--ok); }
-  .lg-miss::before { background: var(--bad); }
-  .lg-extra::before { background: var(--warn); }
-  .lg-cursor::before { background: var(--info); }
   table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 600; }
-  td.time-link { color: var(--info); cursor: pointer; text-decoration: underline dotted; }
   .empty { color: var(--muted); }
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 820px) { .upload-grid, .two-col { grid-template-columns: 1fr; } }
+  .order-chip {
+    display: inline-block; min-width: 30px; text-align: center;
+    padding: 2px 8px; margin: 2px 4px 2px 0; border-radius: 6px;
+    background: rgba(74,168,255,.14); border: 1px solid var(--info);
+    color: #b9dcff; font-weight: 700;
+  }
+  .seg-card {
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 12px; background: var(--bg);
+  }
+  .seg-card h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .peak-bar { display: flex; align-items: flex-end; gap: 3px; height: 56px; margin-top: 8px; }
+  .peak-bar .col {
+    flex: 1 1 auto; background: var(--info); border-radius: 2px 2px 0 0;
+    min-height: 2px; position: relative;
+  }
+  .peak-bar .col span {
+    position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    font-size: 10px; color: var(--muted); white-space: nowrap;
+  }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--info); font-size: 13px; }
+  .mono { font-variant-numeric: tabular-nums; }
+  @media (max-width: 860px) { .form-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>冲压机冲次声音核对</h1>
-  <p>上传正常循环与待检循环录音（16 kHz / 16-bit PCM / 单声道 WAV，≤ 8 秒），系统按参考节奏自动核对漏冲与多冲。点击波形或表格时刻可定位播放。</p>
+  <h1>主轴空转转速声音核对</h1>
+  <p>上传 3～8 秒空转声 WAV（16 kHz / 16-bit PCM / 单声道），填写铭牌允许的转速范围（300～6000 转/分）。
+     系统将录音等分三段，在 5～800 Hz 内拾取最多 8 个最强局部谱峰，按 1～8 阶倍频规则推断三段共同支持的转速区间。</p>
 </header>
 <main>
   <section class="panel">
-    <div class="upload-grid">
-      <div class="upload-box">
-        <label for="refFile">正常循环参考录音（4～8 次清晰冲击，相邻 ≥150ms）</label>
-        <input id="refFile" type="file" accept=".wav,audio/wav" />
-        <div class="hint" id="refHint"></div>
+    <div class="form-grid">
+      <div class="field">
+        <label for="wavFile">空转声录音（.wav，3～8 秒）</label>
+        <input id="wavFile" type="file" accept=".wav,audio/wav" />
+        <div class="hint" id="wavHint"></div>
       </div>
-      <div class="upload-box">
-        <label for="testFile">待检循环录音（可有起始静音、响度变化、漏冲/多冲）</label>
-        <input id="testFile" type="file" accept=".wav,audio/wav" />
-        <div class="hint" id="testHint"></div>
+      <div class="field">
+        <label for="rpmMin">转速下限（转/分）</label>
+        <input id="rpmMin" type="number" min="300" max="6000" step="1" placeholder="如 1400" />
+        <div class="hint">300～6000</div>
+      </div>
+      <div class="field">
+        <label for="rpmMax">转速上限（转/分）</label>
+        <input id="rpmMax" type="number" min="300" max="6000" step="1" placeholder="如 1600" />
+        <div class="hint">300～6000</div>
       </div>
     </div>
     <div class="row">
@@ -111,97 +128,89 @@
   <section id="resultPanel" class="panel" style="display:none">
     <div class="verdict">
       <h2 style="margin:0;font-size:17px">核对结论</h2>
-      <span id="verdictBadge" class="badge ok"></span>
+      <span id="verdictBadge" class="badge"></span>
       <div class="stats" id="stats"></div>
     </div>
-    <div id="ambiguousBanner" class="ambiguous-banner" style="display:none">
-      ⚠ 存在多种同样符合节奏与最少漏冲/多冲规则的冲次归属，系统不做武断放行，<b>请值班员人工复听确认</b>。
-    </div>
+    <div id="banner" class="banner" style="display:none"></div>
     <ul class="warnings" id="warnings"></ul>
-  </section>
 
-  <section id="tracksPanel" class="panel" style="display:none">
-    <div class="two-col">
-      <div>
-        <h3>参考录音波形（绿=已匹配，红=漏冲参考位置）</h3>
-        <div class="track-wrap">
-          <canvas id="refCanvas"></canvas>
-          <audio id="refAudio" controls preload="metadata"></audio>
-        </div>
-      </div>
-      <div>
-        <h3>待检录音波形（绿=已匹配，橙=多冲）</h3>
-        <div class="track-wrap">
-          <canvas id="testCanvas"></canvas>
-          <audio id="testAudio" controls preload="metadata"></audio>
-        </div>
-      </div>
+    <div id="confirmedBox" style="display:none;margin-top:16px">
+      <h3>确认区间与各段支持阶次（区间中点）</h3>
+      <table>
+        <thead><tr><th>段</th><th>支持阶次（1～8）</th><th>阶次 gcd</th><th>谱峰匹配明细</th></tr></thead>
+        <tbody id="midTable"></tbody>
+      </table>
     </div>
-    <div class="legend">
-      <span class="lg-match">匹配冲次</span>
-      <span class="lg-miss">漏冲（参考冲次）</span>
-      <span class="lg-extra">多冲（实录时刻）</span>
-      <span class="lg-cursor">播放位置（点击波形定位）</span>
+
+    <div id="candidateBox" style="display:none;margin-top:16px">
+      <h3>候选转速区间（三段共同支持）</h3>
+      <table>
+        <thead><tr><th>#</th><th>下限 (rpm)</th><th>上限 (rpm)</th><th>宽度 (rpm)</th><th>中点 (rpm)</th><th>类型</th></tr></thead>
+        <tbody id="candTable"></tbody>
+      </table>
+      <p class="empty" style="margin-top:10px">
+        规则：仅当共同区间只有一个且宽度不超过 30 转/分时才确认转速；其余情况无法确认，请结合录音人工复核。
+      </p>
     </div>
   </section>
 
   <section id="detailPanel" class="panel" style="display:none">
-    <div class="two-col">
-      <div>
-        <h3>漏冲明细 — 对应参考冲次</h3>
-        <table id="missTable">
-          <thead><tr><th>参考冲次序号</th><th>参考时刻 (s)</th><th>待检中预计时刻 (s)</th><th>定位</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div>
-        <h3>多冲明细 — 实录时刻</h3>
-        <table id="extraTable">
-          <thead><tr><th>待检冲次序号</th><th>实录时刻 (s)</th><th>定位</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-    <p class="empty" style="margin-top:14px">说明：每次漏冲只标注对应参考冲次，后续冲次按参考序号继续对齐，不会整体错位；40ms 内回声已在检测阶段剔除，不计多冲。</p>
+    <h3>各段谱峰与本段支持区间（仅对应当前录音与转速范围）</h3>
+    <div id="segCards"></div>
   </section>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { result: null, refPeaks: null, testPeaks: null };
+const state = { result: null };
 
-const VERDICT_TEXT = {
-  ok: "✓ 循环正常，未发现漏冲/多冲",
-  defect: "✗ 发现漏冲或多冲",
-  ambiguous: "⚠ 归属存在歧义，需人工复听",
-};
-
-$("refFile").addEventListener("change", () => {
-  $("refHint").textContent = $("refFile").files[0]?.name ?? "";
-  refreshBtn();
-});
-$("testFile").addEventListener("change", () => {
-  $("testHint").textContent = $("testFile").files[0]?.name ?? "";
-  refreshBtn();
-});
 function refreshBtn() {
-  $("submitBtn").disabled = !($("refFile").files[0] && $("testFile").files[0]);
+  $("submitBtn").disabled = !($("wavFile").files[0] && $("rpmMin").value !== "" && $("rpmMax").value !== "");
+}
+["wavFile", "rpmMin", "rpmMax"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    // 输入一旦改变，页面只保留与当前输入对应的结果：先隐藏旧结果
+    hideResult();
+    if (id === "wavFile") $("wavHint").textContent = $("wavFile").files[0]?.name ?? "";
+    refreshBtn();
+  })
+);
+$("rpmMin").addEventListener("input", () => { hideResult(); refreshBtn(); });
+$("rpmMax").addEventListener("input", () => { hideResult(); refreshBtn(); });
+
+function hideResult() {
+  state.result = null;
+  $("resultPanel").style.display = "none";
+  $("detailPanel").style.display = "none";
+  $("error").style.display = "none";
+}
+
+function clientValidate() {
+  const f = $("wavFile").files[0];
+  if (!f) return "请选择空转声 WAV 文件";
+  if (!f.name.toLowerCase().endsWith(".wav")) return "录音必须是 .wav 文件";
+  const lo = Number($("rpmMin").value);
+  const hi = Number($("rpmMax").value);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return "转速上下限必须是数值";
+  if (lo < 300 || lo > 6000 || hi < 300 || hi > 6000) return "转速范围必须在 300～6000 转/分之间";
+  if (lo >= hi) return "转速下限必须严格小于上限";
+  return null;
 }
 
 $("submitBtn").addEventListener("click", async () => {
+  const err = clientValidate();
+  if (err) { showError(err); return; }
+  hideResult();
   const fd = new FormData();
-  fd.append("reference", $("refFile").files[0]);
-  fd.append("test", $("testFile").files[0]);
-  $("error").style.display = "none";
+  fd.append("recording", $("wavFile").files[0]);
+  fd.append("rpm_min", $("rpmMin").value);
+  fd.append("rpm_max", $("rpmMax").value);
   $("busy").style.display = "inline";
   $("submitBtn").disabled = true;
   try {
-    const resp = await fetch("/api/inspect", { method: "POST", body: fd });
+    const resp = await fetch("/api/check", { method: "POST", body: fd });
     const payload = await resp.json();
-    if (!resp.ok) {
-      showError(payload.detail || "分析失败");
-      return;
-    }
+    if (!resp.ok) { showError(payload.detail || "分析失败"); return; }
     state.result = payload;
     render(payload);
   } catch (e) {
@@ -214,189 +223,102 @@ $("submitBtn").addEventListener("click", async () => {
 
 function showError(msg) {
   const el = $("error");
-  el.textContent = "✗ " + msg + "（上一次有效结果仍保留在下方，未被覆盖）";
+  el.textContent = "✗ " + msg;
   el.style.display = "block";
-  if (state.result) render(state.result);
 }
+
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+function gcdList(arr) { return arr.reduce((acc, v) => gcd(acc, v), 0); }
 
 function render(r) {
   $("resultPanel").style.display = "block";
-  $("tracksPanel").style.display = "block";
   $("detailPanel").style.display = "block";
 
   const badge = $("verdictBadge");
   badge.className = "badge " + r.verdict;
-  badge.textContent = VERDICT_TEXT[r.verdict] || r.verdict;
+  badge.textContent = r.verdict === "confirmed"
+    ? "✓ 转速可确认（唯一且宽度 ≤30 rpm）"
+    : "⚠ 无法确认唯一转速";
 
-  const s = r.summary;
   $("stats").innerHTML = [
-    ["参考冲次", s.reference_impact_count],
-    ["待检冲次", s.test_impact_count],
-    ["匹配", s.matched_count],
-    ["漏冲", s.miss_count],
-    ["多冲", s.extra_count],
-    ["回声抑制", s.suppressed_echo_count],
+    ["录音时长", r.audio.duration.toFixed(2) + " s"],
+    ["铭牌范围", `${r.rpm_range.min}～${r.rpm_range.max} rpm`],
+    ["共同候选区间数", r.candidate_intervals.length],
+    ["分析段数", r.audio.segments],
   ].map(([k, v]) => `<span>${k}：<b>${v}</b></span>`).join("");
 
-  $("ambiguousBanner").style.display = r.ambiguous ? "block" : "none";
+  const banner = $("banner");
+  banner.style.display = "block";
+  banner.className = "banner" + (r.verdict === "confirmed" ? " ok" : "");
+  if (r.verdict === "confirmed") {
+    const c = r.confirmed_interval;
+    banner.innerHTML = c.width === 0
+      ? `确认转速：<b class="mono">${c.mid} 转/分</b>（三段共同支持的单点）`
+      : `确认转速区间：<b class="mono">${c.lo} ～ ${c.hi} 转/分</b>，
+         中点 <b class="mono">${c.mid} 转/分</b>，宽度 ${c.width} 转/分`;
+  } else {
+    banner.innerHTML = r.candidate_intervals.length === 0
+      ? "三段没有共同支持的转速区间，<b>无法确认</b>，请检查录音质量或转速范围。"
+      : `存在 ${r.candidate_intervals.length} 个共同候选区间（或区间宽度超过 30 转/分），<b>无法确认</b>唯一稳定转速，请人工复核。`;
+  }
+
   $("warnings").innerHTML = (r.warnings || []).map((w) => `<li>${w}</li>`).join("");
 
-  $("refAudio").src = r.reference.url + "?t=" + r.id;
-  $("testAudio").src = r.test.url + "?t=" + r.id;
+  // 确认：中点各段支持阶次
+  const confirmedBox = $("confirmedBox");
+  const candBox = $("candidateBox");
+  confirmedBox.style.display = r.verdict === "confirmed" ? "block" : "none";
+  candBox.style.display = r.verdict === "confirmed" ? "none" : "block";
 
-  loadPeaks(r.reference.url, r.reference.duration, "refCanvas", "refAudio",
-    r.reference.impacts,
-    r.missed.map((m) => ({ time: m.ref_time, kind: "miss" })));
-  loadPeaks(r.test.url, r.test.duration, "testCanvas", "testAudio",
-    r.test.impacts,
-    r.extras.map((e) => ({ time: e.time, kind: "extra" })));
-
-  const missBody = $("missTable").querySelector("tbody");
-  missBody.innerHTML = r.missed.length ? r.missed.map((m) => `
-    <tr>
-      <td>第 ${m.ref_index + 1} 冲</td>
-      <td>${m.ref_time.toFixed(3)}</td>
-      <td>${m.expected_time.toFixed(3)}</td>
-      <td class="time-link" data-seek="test:${m.expected_time}">待检定位 ▶</td>
-    </tr>`).join("") : `<tr><td colspan="4" class="empty">无漏冲</td></tr>`;
-
-  const extraBody = $("extraTable").querySelector("tbody");
-  extraBody.innerHTML = r.extras.length ? r.extras.map((e) => `
-    <tr>
-      <td>第 ${e.test_index + 1} 个</td>
-      <td>${e.time.toFixed(3)}</td>
-      <td class="time-link" data-seek="test:${e.time}">定位播放 ▶</td>
-    </tr>`).join("") : `<tr><td colspan="3" class="empty">无多冲</td></tr>`;
-
-  document.querySelectorAll("[data-seek]").forEach((td) => {
-    td.addEventListener("click", () => {
-      const [, t] = td.dataset.seek.split(":");
-      seekAndPlay($("testAudio"), parseFloat(t));
-    });
-  });
-}
-
-function seekAndPlay(audio, t) {
-  audio.currentTime = Math.max(0, t - 0.05);
-  audio.play().catch(() => {});
-}
-
-// ---- 极简 16-bit 单声道 PCM WAV 解码（后端已保证格式） ----
-async function decodeWav(url) {
-  const buf = await fetch(url).then((x) => x.arrayBuffer());
-  const view = new DataView(buf);
-  let offset = 12;
-  while (offset < view.byteLength - 8) {
-    const id = String.fromCharCode(...new Uint8Array(buf, offset, 4));
-    const size = view.getUint32(offset + 4, true);
-    if (id === "data") {
-      const pcm = new Int16Array(buf, offset + 8, Math.floor(size / 2));
-      return new Float32Array(pcm).map((v) => v / 32768);
-    }
-    offset += 8 + size + (size % 2);
-  }
-  throw new Error("WAV 中未找到 data 块");
-}
-
-function drawWave(canvas, samples, duration, impacts, extraMarkers, cursorTime) {
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || canvas.parentElement.clientWidth;
-  canvas.width = cssW * dpr;
-  canvas.height = 96 * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const W = cssW, H = 96;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#0f1419";
-  ctx.fillRect(0, 0, W, H);
-
-  const n = samples.length;
-  const bars = Math.max(60, Math.min(W, 600));
-  const step = Math.max(1, Math.floor(n / bars));
-  ctx.strokeStyle = "#3d4c63";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let b = 0; b < bars; b++) {
-    let mx = 0;
-    for (let i = b * step; i < Math.min(n, (b + 1) * step); i++) {
-      const v = Math.abs(samples[i]);
-      if (v > mx) mx = v;
-    }
-    const x = (b / bars) * W;
-    const h = Math.max(1, mx * H * 0.9);
-    ctx.moveTo(x, H / 2 - h / 2);
-    ctx.lineTo(x, H / 2 + h / 2);
-  }
-  ctx.stroke();
-
-  const xOf = (t) => (duration > 0 ? (t / duration) * W : 0);
-
-  // 漏冲（参考侧）/多冲（待检侧）标记：贯穿竖线
-  for (const m of extraMarkers || []) {
-    const color = m.kind === "miss" ? "#e74c3c" : "#f39c12";
-    const x = xOf(m.time);
-    ctx.strokeStyle = color; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(x, 4); ctx.lineTo(x, H - 4); ctx.stroke();
-  }
-  // 每个检测到的冲次：匹配绿、多冲橙、未匹配（参考漏冲）红
-  for (const imp of impacts || []) {
-    const x = xOf(imp.time);
-    let color = "#2ecc71";
-    if (imp.is_extra) color = "#f39c12";
-    else if (imp.matched === false) color = "#e74c3c";
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(x, 10); ctx.lineTo(x, H - 10); ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x, 10, 3, 0, Math.PI * 2); ctx.fill();
+  if (r.verdict === "confirmed") {
+    $("midTable").innerHTML = r.midpoint_orders.map((s) => {
+      const g = gcdList(s.orders);
+      const chips = s.orders.map((o) => `<span class="order-chip">${o} 阶</span>`).join("");
+      const detail = s.matches.map((m) =>
+        `${m.order}阶: 峰 ${m.peak_hz}Hz / 理论 ${m.expected_hz}Hz（差 ${m.error_hz}Hz）`
+      ).join("<br>");
+      return `<tr>
+        <td>第 ${s.segment} 段</td>
+        <td>${chips}</td>
+        <td class="mono">${g}</td>
+        <td class="mono" style="color:var(--muted);font-size:12px">${detail}</td>
+      </tr>`;
+    }).join("");
+  } else {
+    $("candTable").innerHTML = r.candidate_intervals.length
+      ? r.candidate_intervals.map((c, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td class="mono">${c.lo}</td>
+          <td class="mono">${c.hi}</td>
+          <td class="mono">${c.width}</td>
+          <td class="mono">${c.mid}</td>
+          <td>${c.is_point ? "单点" : "连续区间"}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="6" class="empty">无共同候选区间</td></tr>`;
   }
 
-  if (cursorTime != null && cursorTime >= 0) {
-    const x = xOf(cursorTime);
-    ctx.strokeStyle = "#4aa8ff"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-  }
+  // 各段谱峰可视化与本段支持区间
+  $("segCards").innerHTML = r.segments.map((s) => {
+    const maxRel = Math.max(...s.peaks.map((p) => p.power_rel), 1);
+    const bars = s.peaks.map((p) => `
+      <div class="col" style="height:${Math.max(4, (p.power_rel / maxRel) * 100)}%">
+        <span>${p.freq_hz}</span>
+      </div>`).join("");
+    const iv = s.supported_intervals.length
+      ? s.supported_intervals.map((x) =>
+          `<span class="order-chip mono">${x.lo}～${x.hi} rpm</span>`).join("")
+      : `<span class="empty">无满足规则的转速</span>`;
+    return `<div class="seg-card">
+      <h4>第 ${s.segment} 段 · 合格谱峰 ${s.peak_count} 个（柱顶为频率 Hz，高度为相对功率）</h4>
+      <div class="peak-bar">${bars || '<span class="empty">无合格谱峰</span>'}</div>
+      <details>
+        <summary>本段支持转速区间（≥3 阶且阶次 gcd=1）</summary>
+        <div style="margin-top:8px">${iv}</div>
+      </details>
+    </div>`;
+  }).join("");
 }
-
-function bindCanvas(canvas, audio, duration) {
-  canvas.onclick = (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    seekAndPlay(audio, ratio * duration);
-  };
-}
-
-async function loadPeaks(url, duration, canvasId, audioId, impacts, extraMarkers) {
-  const canvas = $(canvasId);
-  const audio = $(audioId);
-  const samples = await decodeWav(url);
-  const redraw = (cursorTime) =>
-    drawWave(canvas, samples, duration, impacts, extraMarkers, cursorTime);
-  redraw(0);
-  bindCanvas(canvas, audio, duration);
-  let raf = null;
-  const loop = () => {
-    raf = null;
-    redraw(audio.currentTime || 0);
-    if (!audio.paused) raf = requestAnimationFrame(loop);
-  };
-  audio.addEventListener("play", () => {
-    if (raf == null) raf = requestAnimationFrame(loop);
-  });
-  audio.addEventListener("seeked", () => redraw(audio.currentTime || 0));
-  audio.addEventListener("pause", () => redraw(audio.currentTime || 0));
-}
-
-// 进入页面时尝试恢复上一次有效结果
-(async () => {
-  try {
-    const resp = await fetch("/api/result/last");
-    if (resp.ok) {
-      const r = await resp.json();
-      state.result = r;
-      render(r);
-    }
-  } catch (_) { /* 首次访问无结果，忽略 */ }
-})();
 </script>
 </body>
 </html>

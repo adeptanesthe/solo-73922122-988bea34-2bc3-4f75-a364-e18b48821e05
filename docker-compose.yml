@@ -1,12 +1,7 @@
 services:
-  press-audio-check:
+  speed-audio-check:
     build: .
-    container_name: press-audio-check
+    container_name: speed-audio-check
     ports:
       - "8000:8000"
-    volumes:
-      - press-data:/data
     restart: unless-stopped
-
-volumes:
-  press-data:

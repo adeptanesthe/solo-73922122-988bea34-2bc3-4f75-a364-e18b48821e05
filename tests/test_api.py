@@ -1,14 +1,5 @@
 """端到端 API 关键流程测试。"""
-import pytest
-
-from conftest import build_wav, post_inspect
-
-
-REF_TIMES = [0.5, 1.0, 1.5, 2.0]
-
-
-def _ref():
-    return build_wav(REF_TIMES, duration=2.6, noise_floor=0.002)
+from conftest import build_harmonic_wav, build_silence_wav, post_check
 
 
 def test_health_and_empty_result(client):
@@ -16,114 +7,94 @@ def test_health_and_empty_result(client):
     assert client.get("/api/result/last").status_code == 404
 
 
-def test_full_normal_cycle(client):
-    test = build_wav([1.1, 1.6, 2.1, 2.6], duration=3.2)  # 带起始静音
-    resp = post_inspect(client, _ref(), test)
+def test_full_confirm_flow(client):
+    wav = build_harmonic_wav(1500, duration=4.0, orders=(2, 3, 4))
+    resp = post_check(client, wav, rpm_min=1400, rpm_max=1600)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["verdict"] == "ok"
-    assert body["summary"]["miss_count"] == 0
-    assert body["summary"]["extra_count"] == 0
-    # 结果已持久化，可再次获取
+    assert body["verdict"] == "confirmed"
+    assert body["confirmed_interval"]["lo"] <= 1500 <= body["confirmed_interval"]["hi"]
+    assert len(body["midpoint_orders"]) == 3
+    assert len(body["segments"]) == 3
+    # 结果可再次获取，且与当前录音/范围对应
     last = client.get("/api/result/last").json()
     assert last["id"] == body["id"]
+    assert last["rpm_range"] == {"min": 1400.0, "max": 1600.0}
 
 
-def test_full_missed_impact(client):
-    test = build_wav([0.5, 1.0, 2.0], duration=2.6)  # 漏第 3 冲
-    body = post_inspect(client, _ref(), test).json()
-    assert body["verdict"] == "defect"
-    assert body["summary"]["miss_count"] == 1
-    missed = body["missed"][0]
-    assert missed["ref_index"] == 2
-    # 后续冲次未错位：第 4 个参考冲次仍匹配待检最后一个
-    tail = [m for m in body["matches"] if m["ref_index"] == 3][0]
-    assert tail["test_index"] == 2
+def test_drift_recording_unconfirmed(client):
+    wav = build_harmonic_wav((1500, 1800, 2100), duration=4.5)
+    body = post_check(client, wav, rpm_min=1000, rpm_max=2500).json()
+    assert body["verdict"] == "unconfirmed"
+    assert body["confirmed_interval"] is None
 
 
-def test_full_extra_impact_and_echo(client):
-    test = build_wav(
-        [0.5, 1.0, 1.25, 1.5, 2.0],
-        duration=2.6,
-        echoes={0.5: 0.035},  # 35ms 回声，不应算多冲
+def test_invalid_rpm_range_returns_400(client):
+    wav = build_harmonic_wav(1500)
+    # 低于 300
+    r = post_check(client, wav, rpm_min=100, rpm_max=1600)
+    assert r.status_code == 400 and "300" in r.json()["detail"]
+    # 高于 6000
+    r = post_check(client, wav, rpm_min=300, rpm_max=7000)
+    assert r.status_code == 400 and "6000" in r.json()["detail"]
+    # 下限 >= 上限
+    r = post_check(client, wav, rpm_min=1500, rpm_max=1500)
+    assert r.status_code == 400 and "小于" in r.json()["detail"]
+    # 非数值
+    r = client.post(
+        "/api/check",
+        files={"recording": ("a.wav", wav, "audio/wav")},
+        data={"rpm_min": "abc", "rpm_max": "1600"},
     )
-    body = post_inspect(client, _ref(), test).json()
-    assert body["summary"]["extra_count"] == 1
-    assert body["summary"]["suppressed_echo_count"] == 1
-    assert body["extras"][0]["time"] == pytest.approx(1.25, abs=0.015)
+    assert r.status_code == 400 and "数值" in r.json()["detail"]
+    # 缺字段
+    r = client.post(
+        "/api/check",
+        files={"recording": ("a.wav", wav, "audio/wav")},
+        data={"rpm_min": "1400"},
+    )
+    assert r.status_code == 422
 
 
-def test_tempo_minus_12_percent_accepted(client):
-    t = [0.5 + (x - 0.5) * 0.88 for x in REF_TIMES]
-    body = post_inspect(client, _ref(), build_wav(t, duration=2.4)).json()
-    assert body["verdict"] == "ok"
-
-
-def test_ambiguous_requires_manual_review(client):
-    test = build_wav([0.5, 1.0, 1.5, 2.0, 2.5], duration=3.0)
-    body = post_inspect(client, _ref(), test).json()
-    assert body["ambiguous"] is True
-    assert body["verdict"] == "ambiguous"
-    assert any("人工复听" in w for w in body["warnings"])
-
-
-def test_invalid_audio_does_not_overwrite_last_result(client):
-    good = post_inspect(client, _ref(), build_wav(REF_TIMES, duration=2.6))
-    assert good.status_code == 200
-    good_id = good.json()["id"]
-
-    # 错误采样率
-    bad = build_wav(REF_TIMES, sr=8000, duration=2.6)
-    resp = post_inspect(client, _ref(), bad)
-    assert resp.status_code == 400
-    assert "采样率" in resp.json()["detail"]
-
-    # 参考冲次不足 4 次
-    bad_ref = build_wav([0.5, 1.0, 1.5], duration=2.0)
-    resp2 = post_inspect(client, bad_ref, build_wav(REF_TIMES, duration=2.6))
-    assert resp2.status_code == 400
-    assert "参考录音" in resp2.json()["detail"]
-
+def test_invalid_audio_returns_400(client):
+    # 时长不足 3 秒
+    short = build_silence_wav(duration=2.0)
+    r = post_check(client, short)
+    assert r.status_code == 400 and "下限" in r.json()["detail"]
     # 非 WAV
-    resp3 = client.post(
-        "/api/inspect",
-        files={
-            "reference": ("ref.wav", _ref(), "audio/wav"),
-            "test": ("test.txt", b"hello", "text/plain"),
-        },
+    r = client.post(
+        "/api/check",
+        files={"recording": ("a.txt", b"hello", "text/plain")},
+        data={"rpm_min": "1400", "rpm_max": "1600"},
     )
-    assert resp3.status_code == 400
-
-    # 上一次结果仍在
-    last = client.get("/api/result/last").json()
-    assert last["id"] == good_id
-
-
-def test_silent_test_all_missed(client):
-    import io
-    import wave
-    import numpy as np
-
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(16000)
-        wf.writeframes(np.zeros(2 * 16000, dtype="<i2").tobytes())
-    body = post_inspect(client, _ref(), buf.getvalue()).json()
-    assert body["summary"]["test_impact_count"] == 0
-    assert body["summary"]["miss_count"] == 4
-    assert any("未检测到任何冲击" in w for w in body["warnings"])
+    assert r.status_code == 400 and ".wav" in r.json()["detail"]
+    # 空文件
+    r = client.post(
+        "/api/check",
+        files={"recording": ("a.wav", b"", "audio/wav")},
+        data={"rpm_min": "1400", "rpm_max": "1600"},
+    )
+    assert r.status_code == 400
 
 
-def test_uploaded_audio_served_back(client):
-    body = post_inspect(client, _ref(), build_wav(REF_TIMES, duration=2.6)).json()
-    resp = client.get(body["test"]["url"])
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "audio/wav"
+def test_last_result_not_created_on_invalid_input(client):
+    # 先产生一条有效结果
+    good = post_check(client, build_harmonic_wav(1500, orders=(2, 3, 4)), 1400, 1600)
+    good_id = good.json()["id"]
+    # 非法输入被拒
+    bad = post_check(client, build_silence_wav(duration=2.0))
+    assert bad.status_code == 400
+    # 上一次有效结果仍在
+    assert client.get("/api/result/last").json()["id"] == good_id
+
+
+def test_clear_result(client):
+    post_check(client, build_harmonic_wav(1500, orders=(2, 3, 4)), 1400, 1600)
+    assert client.delete("/api/result/last").json() == {"status": "cleared"}
+    assert client.get("/api/result/last").status_code == 404
 
 
 def test_index_page(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "冲压机" in resp.text
+    assert "主轴空转转速" in resp.text

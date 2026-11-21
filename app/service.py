@@ -1,158 +1,87 @@
-"""检查服务与结果存储。
+"""核对服务：输入校验与谱分析编排。
 
-无效音频（格式错误、参考不达标等）直接抛错，由 API 层返回 400，
-且完全不触碰已保存的上一次有效结果。
+任何输入错误（WAV 格式/时长、转速范围）都抛出明确原因的异常，
+由 API 层转成 400，且不会产生有效结果。
 """
 from __future__ import annotations
 
-import hashlib
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from .audio import (
-    detect_impacts,
-    parse_wav,
-    validate_reference,
-)
-from .matching import align_impacts
+from .audio import SAMPLE_RATE, parse_wav
+from .matching import analyze
 
-MAX_UPLOAD_BYTES = 16_000 * 2 * 8 + 4096  # 8 秒 16k/16bit/单声道 + WAV 头余量
+RPM_LIMIT_MIN = 300.0
+RPM_LIMIT_MAX = 6000.0
 
 
-class Store:
-    def __init__(self, data_dir: Path):
-        self.data_dir = data_dir
-        self.uploads_dir = data_dir / "uploads"
-        self.uploads_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+class InputValidationError(ValueError):
+    """表单输入（转速范围等）不合法。"""
+
+
+def parse_rpm(value: Any, label: str) -> float:
+    """解析铭牌转速边界，要求是 300～6000 内的有限数值。"""
+    if value is None or str(value).strip() == "":
+        raise InputValidationError(f"请填写{label}")
+    try:
+        rpm = float(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise InputValidationError(f"{label}必须是数值（转/分），当前输入：{value}") from exc
+    if not (RPM_LIMIT_MIN <= rpm <= RPM_LIMIT_MAX):
+        raise InputValidationError(
+            f"{label}必须在 {RPM_LIMIT_MIN:.0f}～{RPM_LIMIT_MAX:.0f} 转/分之间，"
+            f"当前：{rpm:g}"
+        )
+    return rpm
+
+
+def validate_rpm_range(rpm_min_raw: Any, rpm_max_raw: Any) -> tuple[float, float]:
+    rpm_min = parse_rpm(rpm_min_raw, "铭牌允许转速下限")
+    rpm_max = parse_rpm(rpm_max_raw, "铭牌允许转速上限")
+    if rpm_min >= rpm_max:
+        raise InputValidationError(
+            f"转速下限（{rpm_min:g}）必须严格小于上限（{rpm_max:g}）"
+        )
+    return rpm_min, rpm_max
+
+
+class SpeedCheckService:
+    def __init__(self) -> None:
         self._last_result: dict[str, Any] | None = None
 
-    def _save_wav(self, raw: bytes, prefix: str) -> str:
-        digest = hashlib.sha256(raw).hexdigest()[:16]
-        name = f"{prefix}_{digest}.wav"
-        path = self.uploads_dir / name
-        if not path.exists():
-            path.write_bytes(raw)
-        return f"/data/uploads/{name}"
+    def inspect(self, wav_raw: bytes, rpm_min_raw: Any, rpm_max_raw: Any) -> dict[str, Any]:
+        # 先完成全部输入校验与解析，任何一步失败都不会产生结果
+        rpm_min, rpm_max = validate_rpm_range(rpm_min_raw, rpm_max_raw)
+        audio = parse_wav(wav_raw)
 
-    def inspect(self, reference_raw: bytes, test_raw: bytes) -> dict[str, Any]:
-        # 先完整解析与检测，任何一步抛错都不会写入状态
-        ref_samples = parse_wav(reference_raw)
-        test_samples = parse_wav(test_raw)
-
-        ref_det = detect_impacts(ref_samples)
-        validate_reference(ref_det)  # 参考不达标 -> AudioValidationError
-        test_det = detect_impacts(test_samples)
-
-        alignment = align_impacts(ref_det.times, test_det.times)
-
-        matched_ref = {i for i, _ in alignment.matched}
-        matched_test = {j for _, j in alignment.matched}
-        ref_url = self._save_wav(reference_raw, "ref")
-        test_url = self._save_wav(test_raw, "test")
-
-        reference_impacts = [
-            {
-                "index": i,
-                "time": round(t, 4),
-                "matched": i in matched_ref,
-            }
-            for i, t in enumerate(ref_det.times)
-        ]
-        test_impacts = [
-            {
-                "index": j,
-                "time": round(t, 4),
-                "matched": j in matched_test,
-                "is_extra": j in alignment.extra_test_indices,
-            }
-            for j, t in enumerate(test_det.times)
-        ]
-
-        missed = [
-            {
-                "ref_index": i,
-                "ref_time": round(ref_det.times[i], 4),
-                "expected_time": round(
-                    alignment.expected_missed_times.get(i, ref_det.times[i]), 4
-                ),
-            }
-            for i in alignment.missed_ref_indices
-        ]
-        extras = [
-            {
-                "test_index": j,
-                "time": round(test_det.times[j], 4),
-            }
-            for j in alignment.extra_test_indices
-        ]
-        matches = [
-            {
-                "ref_index": i,
-                "test_index": j,
-                "ref_time": round(ref_det.times[i], 4),
-                "test_time": round(test_det.times[j], 4),
-            }
-            for i, j in alignment.matched
-        ]
-
-        verdict = "ok"
-        if alignment.ambiguous:
-            verdict = "ambiguous"
-        elif alignment.miss_count or alignment.extra_count:
-            verdict = "defect"
-
-        warnings: list[str] = []
-        if not test_det.times:
-            warnings.append("待检录音未检测到任何冲击，全部参考冲次按漏冲处理")
-        if test_det.suppressed_echoes:
-            warnings.append(
-                f"已抑制 {len(test_det.suppressed_echoes)} 个 40ms 内回声，不计多冲"
-            )
-        if alignment.ambiguous:
-            warnings.append("存在多种同样符合节奏与最少漏/多冲规则的归属，请人工复听")
+        analysis = analyze(
+            audio.segments,
+            sample_rate=SAMPLE_RATE,
+            rpm_min=rpm_min,
+            rpm_max=rpm_max,
+        )
 
         result = {
             "id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "verdict": verdict,
-            "ambiguous": alignment.ambiguous,
-            "optimal_way_count": alignment.optimal_way_count,
-            "summary": {
-                "reference_impact_count": len(ref_det.times),
-                "test_impact_count": len(test_det.times),
-                "matched_count": len(alignment.matched),
-                "miss_count": alignment.miss_count,
-                "extra_count": alignment.extra_count,
-                "suppressed_echo_count": len(test_det.suppressed_echoes),
+            "audio": {
+                "duration": round(audio.duration, 4),
+                "sample_rate": SAMPLE_RATE,
+                "segments": 3,
             },
-            "reference": {
-                "url": ref_url,
-                "duration": round(ref_det.duration, 4),
-                "impacts": reference_impacts,
-            },
-            "test": {
-                "url": test_url,
-                "duration": round(test_det.duration, 4),
-                "impacts": test_impacts,
-            },
-            "matches": matches,
-            "missed": missed,
-            "extras": extras,
-            "timing_ratios": [round(r, 4) for r in alignment.timing_ratios],
-            "warnings": warnings,
+            "rpm_range": {"min": rpm_min, "max": rpm_max},
+            "verdict": analysis["verdict"],
+            "confirmed_interval": analysis["confirmed_interval"],
+            "midpoint_orders": analysis["midpoint_orders"],
+            "candidate_intervals": analysis["candidate_intervals"],
+            "segments": analysis["segments"],
+            "warnings": analysis["warnings"],
         }
-
-        with self._lock:
-            self._last_result = result
+        self._last_result = result
         return result
 
     def get_last(self) -> dict[str, Any] | None:
-        with self._lock:
-            return None if self._last_result is None else dict(self._last_result)
+        return None if self._last_result is None else dict(self._last_result)
 
     def clear(self) -> None:
-        with self._lock:
-            self._last_result = None
+        self._last_result = None
